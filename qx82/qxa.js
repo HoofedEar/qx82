@@ -35,11 +35,11 @@ export async function key() {
 ///   The maximum width of the input line, in characters.
 ///   When the user types more, the text will wrap to the next line.
 ///   If this is -1, this means it won't wrap at all.
-export async function readLine(initString = "", maxLen = -1, maxWidth = -1) {
+export async function readLine(initString = "", maxLen = -1, maxWidth = -1, drawArea = false) {
   main.preflight("readLine");
   qut.checkString("initString", initString);
   qut.checkNumber("maxLen", maxLen);
-  return await main.inputSys.readLine(initString, maxLen, maxWidth);
+  return await main.inputSys.readLine(initString, maxLen, maxWidth, drawArea);
 }
 
 /// Shows a menu of choices and waits for the user to pick an option.
@@ -81,11 +81,11 @@ export async function menu(choices, options = {}) {
 ///   just show "OK". You can use for example ["No","Yes"] if you
 ///   want the user to be able to choose one of those options to
 ///   confirm something.
-export async function dialog(prompt, choices = ["OK"]) {
+export async function dialog(prompt, choices = ["OK"], cancelable = false) {
   main.preflight("dialog");
   qut.checkString("prompt", prompt);
   qut.checkArray("choices", choices);
-  return menu(choices, { prompt, center: true });
+  return menu(choices, { prompt, center: true, cancelable: cancelable });
 }
 
 /// Waits for a given number of seconds.
@@ -119,9 +119,12 @@ export async function typewriter(text, delay = 0.05) {
     }
 
     const c = text.charCodeAt(i);
+    if (c === 42) {await wait(delay * 5); continue;}
     qx.locate(startCol, startRow);
-
-    qx.print(text.substring(0, i));
+    let j = text.substring(0, i);
+    // remove all asterisks from j
+    j = j.replace(/\*/g, '');
+    qx.print(j);
 
     if (c !== 32) await wait(delay);
   }

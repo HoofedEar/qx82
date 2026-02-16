@@ -274,6 +274,35 @@ const FRAGMENT_SHADER = `
   }
 `;
 
+// Raycaster for mouse coordinate conversion.
+const raycaster = new THREE.Raycaster();
+const mouseNDC = new THREE.Vector2();
+
+// Converts a browser mouse position (clientX, clientY) to virtual canvas coordinates.
+// Returns {x, y} in virtual pixels, or {x: -1, y: -1} if the ray doesn't hit the screen.
+export function screenToVirtual(clientX, clientY) {
+  if (!realCanvas || !camera || !screenMesh) return { x: -1, y: -1 };
+  const rect = realCanvas.getBoundingClientRect();
+  // Convert to normalized device coordinates (-1 to +1).
+  mouseNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  mouseNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouseNDC, camera);
+  const intersects = raycaster.intersectObject(screenMesh);
+  if (intersects.length === 0) return { x: -1, y: -1 };
+
+  const uv = intersects[0].uv;
+  if (!uv) return { x: -1, y: -1 };
+
+  const vx = Math.floor(uv.x * CONFIG.SCREEN_WIDTH);
+  const vy = Math.floor((1 - uv.y) * CONFIG.SCREEN_HEIGHT);
+
+  if (vx < 0 || vy < 0 || vx >= CONFIG.SCREEN_WIDTH || vy >= CONFIG.SCREEN_HEIGHT) {
+    return { x: -1, y: -1 };
+  }
+  return { x: vx, y: vy };
+}
+
 // Source:
 // https://github.com/ashima/webgl-noise/blob/master/src/noise3D.glsl
 // (MIT licensed)

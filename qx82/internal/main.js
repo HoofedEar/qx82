@@ -25,6 +25,7 @@ export let deltaTime = 0;  // Time elapsed since last frame.
 export const drawState = {
   fgColor: 7,
   bgColor: 0,  // -1 means transparent
+  brightness: 1.0, // 0.0 (black) to 1.0 (full brightness)
 
   cursorCol: 0,
   cursorRow: 0,
@@ -128,6 +129,7 @@ async function asyncInit(callback) {
   // Initialize subsystems
   textRenderer = new TextRenderer();
   inputSys = new InputSys();
+  inputSys.initMouse(realCanvas);
   cursorRenderer = new CursorRenderer();
 
   await textRenderer.initAsync();
@@ -140,6 +142,9 @@ async function asyncInit(callback) {
     tv3d.setup(realCanvas, canvas);
     // Needs to update again because THREE.js messes around with the canvas. I think.
     updateLayout(false);
+    // Use 3D raycasting for mouse coordinate conversion.
+    inputSys.setCoordConverter((clientX, clientY) =>
+      tv3d.screenToVirtual(clientX, clientY));
   }
 
   if (isMobile()) {
@@ -250,7 +255,7 @@ export function markDirty() {
 }
 
 export function cls() {
-  ctx.fillStyle = getColorHex(drawState.bgColor);
+  ctx.fillStyle = getColorHexWithBrightness(drawState.bgColor);
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   this.setCursorLocation(0, 0);
   markDirty();
@@ -285,12 +290,46 @@ export function getColorHex(c) {
   return CONFIG.COLORS[c];
 }
 
+export function getColorHexWithBrightness(colorIndex, brightness = null) {
+  if (typeof(colorIndex) !== "number") return "#f0f";
+  if (colorIndex < 0) return "#000";
+  colorIndex = qut.clamp(Math.round(colorIndex), 0, CONFIG.COLORS.length - 1);
+
+  // Use the provided brightness if given, otherwise use global brightness
+  const actualBrightness = brightness !== null ? brightness : drawState.brightness;
+
+  if (actualBrightness >= 1.0) {
+    return CONFIG.COLORS[colorIndex]; // Full brightness, no modification needed
+  }
+
+  // Parse the color and apply brightness
+  const colorStr = CONFIG.COLORS[colorIndex];
+  let r, g, b;
+
+  if (colorStr.length === 4) { // #RGB format
+    r = parseInt(colorStr[1] + colorStr[1], 16);
+    g = parseInt(colorStr[2] + colorStr[2], 16);
+    b = parseInt(colorStr[3] + colorStr[3], 16);
+  } else { // #RRGGBB format
+    r = parseInt(colorStr.substring(1, 3), 16);
+    g = parseInt(colorStr.substring(3, 5), 16);
+    b = parseInt(colorStr.substring(5, 7), 16);
+  }
+
+  // Apply brightness
+  r = Math.round(r * actualBrightness);
+  g = Math.round(g * actualBrightness);
+  b = Math.round(b * actualBrightness);
+
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
 export function getNow() {
   return window.performance.now ?
     window.performance.now() : (new Date()).getTime();
 }
 
-export function drawImage(img, x, y, srcX, srcY, width, height) {
+export function drawImage(img, x, y, srcX, srcY, width, height, brightness = null) {
   qut.checkInstanceOf("img", img, HTMLImageElement);
   qut.checkNumber("x", x);
   qut.checkNumber("y", y);
@@ -298,12 +337,26 @@ export function drawImage(img, x, y, srcX, srcY, width, height) {
   if (srcY !== undefined) qut.checkNumber("srcY", srcY);
   if (width !== undefined) qut.checkNumber("width", width);
   if (height !== undefined) qut.checkNumber("height", height);
+
+  // Save current global alpha
+  const oldAlpha = ctx.globalAlpha;
+
+  // Apply brightness if specified or if global brightness is not at max
+  if (brightness !== null || drawState.brightness < 1.0) {
+    const actualBrightness = brightness !== null ? brightness : drawState.brightness;
+    ctx.globalAlpha = actualBrightness;
+  }
+
+  // Draw the image
   if (srcX !== undefined && srcY !== undefined &&
       width !== undefined && height !== undefined) {
     ctx.drawImage(img, srcX, srcY, width, height, x, y, width, height);
   } else {
     ctx.drawImage(img, x, y);
   }
+
+  // Restore original alpha
+  ctx.globalAlpha = oldAlpha;
 }
 
 export function drawRect(x, y, width, height) {
@@ -312,12 +365,22 @@ export function drawRect(x, y, width, height) {
   qut.checkNumber("width", width);
   qut.checkNumber("height", height);
   let oldStrokeStyle = ctx.strokeStyle;
-  ctx.strokeStyle = getColorHex(drawState.fgColor);
+  ctx.strokeStyle = getColorHexWithBrightness(drawState.fgColor);
+
+  // Save global alpha
+  const oldAlpha = ctx.globalAlpha;
+  if (drawState.brightness < 1.0) {
+    ctx.globalAlpha = drawState.brightness;
+  }
+
   // Must add 0.5 to x and y so we draw in the "middle"
   // of the pixel. Weird canvas floating-point coords.
   ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5,
     Math.round(width) - 1, Math.round(height) - 1);
+
+  // Restore original values
   ctx.strokeStyle = oldStrokeStyle;
+  ctx.globalAlpha = oldAlpha;
 }
 
 export function fillRect(x, y, width, height) {
@@ -325,11 +388,21 @@ export function fillRect(x, y, width, height) {
   qut.checkNumber("y", y);
   qut.checkNumber("width", width);
   qut.checkNumber("height", height);
-  ctx.fillStyle = getColorHex(drawState.fgColor);
+  ctx.fillStyle = getColorHexWithBrightness(drawState.fgColor);
+
+  // Save global alpha
+  const oldAlpha = ctx.globalAlpha;
+  if (drawState.brightness < 1.0) {
+    ctx.globalAlpha = drawState.brightness;
+  }
+
   // Must add 0.5 to x and y so we draw in the "middle"
   // of the pixel. Weird canvas floating-point coords.
   ctx.fillRect(Math.round(x) + 0.5, Math.round(y) + 0.5,
     Math.round(width) - 1, Math.round(height) - 1);
+
+  // Restore original alpha
+  ctx.globalAlpha = oldAlpha;
 }
 
 export function saveScreen() {
@@ -339,6 +412,15 @@ export function saveScreen() {
 export function restoreScreen(screenData) {
   qut.checkInstanceOf("screenData", screenData, ImageData);
   ctx.putImageData(screenData, 0, 0);
+}
+
+export function setBrightness(brightness) {
+  qut.checkNumber("brightness", brightness);
+  drawState.brightness = qut.clamp(brightness, 0, 1);
+}
+
+export function getBrightness() {
+  return drawState.brightness;
 }
 
 async function doFrame() {

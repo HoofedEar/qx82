@@ -2,6 +2,7 @@
 
 import * as main from "./internal/main.js";
 import * as qut from "./qut.js";
+import { CONFIG } from "./config.js";
 
 /// Initializes the API. This must be called before other functions
 /// and it must finish executing before other API functions are called.
@@ -143,6 +144,31 @@ export function drawText(x, y, text, fontId = null) {
   main.textRenderer.drawText(x, y, text, fontId);
 }
 
+/// Draws text at an arbitrary pixel position on the screen with a specific brightness level.
+/// This won't affect cursor position.
+/// x: integer
+///   The X coordinate of the top-left of the text.
+/// y: integer
+///   The Y coordinate of the top-left of the text.
+/// text: string
+///   The text to print.
+/// brightness: number
+///   A value from 0.0 (completely dark) to 1.0 (full brightness).
+/// fontId: string
+///   (optional) If specified, this is a font ID previously obtained with
+///   qxa.loadFont(), indicating the custom font to use to print the text.
+///   If not specified, then we will use the current font as set with
+///   qx.setFont(), or the default font if that was never set.
+export function drawTextWithBrightness(x, y, text, brightness, fontId = null) {
+  main.preflight("qx.drawTextWithBrightness");
+  qut.checkNumber("x", x);
+  qut.checkNumber("y", y);
+  qut.checkString("text", text);
+  qut.checkNumber("brightness", brightness);
+  if (fontId) qut.checkString("fontId", fontId);
+  main.textRenderer.drawTextWithBrightness(x, y, text, brightness, fontId);
+}
+
 /// Measures the size of the given text without printing it.
 /// text: string
 ///   The text to measure.
@@ -169,6 +195,36 @@ export function printChar(charCode, numTimes = 1) {
   qut.checkNumber("charCode", charCode);
   qut.checkNumber("numTimes", numTimes);
   main.textRenderer.printChar(charCode, numTimes);
+}
+
+/// Prints a character at the current cursor position using the current
+/// foreground and background colors, but flipped horizontally (mirrored),
+/// advancing the cursor position.
+/// charCode: integer | string
+///   The character to print, as an integer (its ASCII code). This
+///   can also be a one-character string for convenience, so 65
+///   and "A" mean the same thing.
+/// numTimes: integer, optional, default = 1
+///   How many times to print the character. By default 1.
+export function printCharHFlip(charCode, numTimes = 1) {
+  main.preflight("qx.printCharHFlip");
+  charCode = convChar(charCode);
+  qut.checkNumber("charCode", charCode);
+  qut.checkNumber("numTimes", numTimes);
+  main.textRenderer.printCharHFlip(charCode, numTimes);
+}
+
+/// Prints a character vertically flipped (upside down).
+/// charCode: integer | string
+///   The character to print. If a string, the first character's ASCII code is used.
+/// numTimes: integer, optional, default = 1
+///   How many times to print the character.
+export function printCharVFlip(charCode, numTimes = 1) {
+  main.preflight("qx.printCharVFlip");
+  charCode = convChar(charCode);
+  qut.checkNumber("charCode", charCode);
+  qut.checkNumber("numTimes", numTimes);
+  main.textRenderer.printCharVFlip(charCode, numTimes);
 }
 
 /// Prints a rectangle of the given size with the given character,
@@ -225,11 +281,12 @@ export function printBox(widthCols, heightRows, fill = true, borderChar = 0x80) 
 ///   where the top-left of the image will be drawn.
 /// image: Image
 ///   The image to draw.
-export function drawImage(x, y, image) {
+export function drawImage(x, y, image, brightness = null) {
   qut.checkInstanceOf("image", image, HTMLImageElement);
   qut.checkNumber("x", x);
   qut.checkNumber("y", y);
-  main.drawImage(image, x, y);
+  if (brightness !== null) qut.checkNumber("brightness", brightness);
+  main.drawImage(image, x, y, undefined, undefined, undefined, undefined, brightness);
 }
 
 /// Draws a rectangular part of an image (previously loaded with qxa.loadImage).
@@ -251,7 +308,7 @@ export function drawImage(x, y, image) {
 ///   The width in pixels of the rectangle to be drawn.
 /// height: integer
 ///   The height in pixels of the rectangle to be drawn.
-export function drawImageRect(x, y, image, srcX, srcY, width, height) {
+export function drawImageRect(x, y, image, srcX, srcY, width, height, brightness = null) {
   qut.checkInstanceOf("image", image, HTMLImageElement);
   qut.checkNumber("x", x);
   qut.checkNumber("y", y);
@@ -259,7 +316,8 @@ export function drawImageRect(x, y, image, srcX, srcY, width, height) {
   qut.checkNumber("srcY", srcY);
   qut.checkNumber("width", width);
   qut.checkNumber("height", height);
-  main.drawImage(image, x, y, srcX, srcY, width, height);
+  if (brightness !== null) qut.checkNumber("brightness", brightness);
+  main.drawImage(image, x, y, srcX, srcY, width, height, brightness);
 }
 
 /// Draws a rectangle (border only). The rectangle is drawn using the
@@ -316,7 +374,7 @@ export function playSound(sfx, volume = 1, loop = false) {
   sfx.currentTime = 0;
   sfx.volume = volume;
   sfx.loop = loop;
-  sfx.play();
+  sfx.cloneNode().play();
 }
 
 /// Draws a sprite on the screen.
@@ -332,6 +390,30 @@ export function spr(ch, x, y) {
   qut.checkNumber("x", x);
   qut.checkNumber("y", y);
   main.textRenderer.spr(ch, x, y);
+}
+
+/// Draws a sprite on the screen with a specific brightness level.
+/// ch:
+///   The character code of the sprite.
+/// x:
+///   The X position at which to draw (top-left).
+/// y:
+///   The Y position at which to draw (top-left).
+/// brightness:
+///   A value from 0.0 (completely dark) to 1.0 (full brightness).
+export function sprBright(ch, x, y, brightness) {
+  ch = convChar(ch);
+  qut.checkNumber("ch", ch);
+  qut.checkNumber("x", x);
+  qut.checkNumber("y", y);
+  qut.checkNumber("brightness", brightness);
+
+  const savedBrightness = main.drawState.brightness;
+  main.setBrightness(brightness);
+
+  main.textRenderer.spr(ch, x, y);
+
+  main.setBrightness(savedBrightness);
 }
 
 /// Checks if the given key is currently pressed or not. This only works
@@ -358,6 +440,62 @@ export function keyp(keyName) {
   main.preflight("qx.keyp");
   qut.checkString("keyName", keyName);
   return main.inputSys.keyJustPressed(keyName);
+}
+
+/// Returns the mouse X position in virtual canvas pixels.
+/// Returns -1 if the mouse is not over the canvas.
+/// This only works if running in a frame handler (see the qx.frame() function).
+export function mouseX() {
+  main.preflight("qx.mouseX");
+  return main.inputSys.getMouseX();
+}
+
+/// Returns the mouse Y position in virtual canvas pixels.
+/// Returns -1 if the mouse is not over the canvas.
+/// This only works if running in a frame handler (see the qx.frame() function).
+export function mouseY() {
+  main.preflight("qx.mouseY");
+  return main.inputSys.getMouseY();
+}
+
+/// Returns the mouse column (character grid position).
+/// Returns -1 if the mouse is not over the canvas.
+export function mouseCol() {
+  main.preflight("qx.mouseCol");
+  const mx = main.inputSys.getMouseX();
+  if (mx < 0) return -1;
+  return Math.floor(mx / CONFIG.CHR_WIDTH);
+}
+
+/// Returns the mouse row (character grid position).
+/// Returns -1 if the mouse is not over the canvas.
+export function mouseRow() {
+  main.preflight("qx.mouseRow");
+  const my = main.inputSys.getMouseY();
+  if (my < 0) return -1;
+  return Math.floor(my / CONFIG.CHR_HEIGHT);
+}
+
+/// Checks if a mouse button is currently held down.
+/// This only works if running in a frame handler (see the qx.frame() function).
+/// button: integer
+///   The button to check: 0 = left, 1 = middle, 2 = right.
+export function mouseBtn(button) {
+  main.preflight("qx.mouseBtn");
+  qut.checkNumber("button", button);
+  return main.inputSys.mouseButtonHeld(button);
+}
+
+/// Checks if a mouse button was JUST pressed on this frame.
+/// This only works if running in a frame handler (see the frame() function).
+/// When a button is pressed, this function will return true for one frame,
+/// then will become false afterwards even if the button is held.
+/// button: integer
+///   The button to check: 0 = left, 1 = middle, 2 = right.
+export function mouseBtnp(button) {
+  main.preflight("qx.mouseBtnp");
+  qut.checkNumber("button", button);
+  return main.inputSys.mouseButtonJustPressed(button);
 }
 
 /// Redefines the colors, that is, assigns new RGB values to each
@@ -441,4 +579,48 @@ export function saveScreen() {
 ///   The ImageData object obtained from a previous call to qx.saveScreen().
 export function restoreScreen(screenData) {
   return main.restoreScreen(screenData);
+}
+
+/// Sets the brightness level for drawing operations.
+/// brightness: number
+///   A value from 0.0 (completely dark) to 1.0 (full brightness).
+///   Values outside this range will be clamped.
+export function brightness(value) {
+  main.preflight("qx.brightness");
+  qut.checkNumber("value", value);
+  main.setBrightness(value);
+}
+
+/// Returns the current brightness level.
+/// return: number
+///   The current brightness level, from 0.0 to 1.0.
+export function getBrightness() {
+  main.preflight("qx.getBrightness");
+  return main.getBrightness();
+}
+
+/// Draws a character with a specific brightness level.
+/// This is similar to printChar but allows you to override the global brightness.
+/// ch: integer | string
+///   The character to print, as an integer (its ASCII code) or a one-character string.
+/// col: integer
+///   The column where the character should be drawn.
+/// row: integer
+///   The row where the character should be drawn.
+/// brightness: number
+///   A value from 0.0 (completely dark) to 1.0 (full brightness).
+export function drawCharWithBrightness(ch, col, row, brightness) {
+  main.preflight("qx.drawCharWithBrightness");
+  ch = convChar(ch);
+  qut.checkNumber("ch", ch);
+  qut.checkNumber("col", col);
+  qut.checkNumber("row", row);
+  qut.checkNumber("brightness", brightness);
+
+  const savedBrightness = main.drawState.brightness;
+  main.setBrightness(brightness);
+
+  main.textRenderer.put_(ch, col, row, main.drawState.fgColor, main.drawState.bgColor);
+
+  main.setBrightness(savedBrightness);
 }

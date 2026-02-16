@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Example - Tactics (Mouse Demo)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <style type="text/css">
+  body {
+    background: black;
+    color: white;
+  }
+  </style>
+
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./three-0.156.1/three.module.min.js",
+        "three/addons/": "./three-0.156.1/addons/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as qx from "./qx82/qx.js";
+    import * as qxa from "./qx82/qxa.js";
+
+    // ===== MAP =====
+    const MW = 16, MH = 12;
+    const MX = 0, MY = 1; // map top-left in screen cols/rows
+    const PX = 17; // right panel x
+
+    const TERR = {
+      '.': { name:'Plains',  ch:0x20, fg:0, cost:1, def:0 },
+      ',': { name:'Grass',   ch:0xCC, fg:4, cost:1, def:0 },
+      'F': { name:'Forest',  ch:0xDF, fg:4, cost:2, def:2 },
+      'M': { name:'Mtn',     ch:0xCE, fg:8, cost:-1,def:0 },
+      '~': { name:'Water',   ch:0xCD, fg:5, cost:-1,def:0 },
+      '=': { name:'Bridge',  ch:0xDD, fg:6, cost:1, def:0 },
+    };
+
+    const MAP = [
+      ",,.,,.F....,,.,,",
+      ".,,F..FF......,,",
+      "..,...F..MM..,..",
+      ",,............,,",
+      "..F...,,..,....,",
+      "~~~~~~~~~~~~=~~~",
+      ".,..........,..,",
+      ".,,,..,,......,,",
+      "..F,......FF....",
+      ",,....F...FF,,..",
+      ".,,...FF...,..,.",
+      ",,.,,.F..,,.,.,,",
+    ];
+    // Validate map dimensions
+    for (let i = 0; i < MAP.length; i++) {
+      if (MAP[i].length !== MW) console.error("Row " + i + " is " + MAP[i].length + " wide, expected " + MW);
+    }
+
+    // ===== UNITS =====
+    let units = [
+      { name:"Knight",  ch:0xC0, team:0, x:2,  y:1, hp:10,mhp:10,atk:5,def:3,mov:3,acted:false },
+      { name:"Scout",   ch:0xC1, team:0, x:5,  y:3, hp:7, mhp:7, atk:4,def:1,mov:5,acted:false },
+      { name:"Paladin", ch:0xC0, team:0, x:1,  y:3, hp:13,mhp:13,atk:6,def:4,mov:2,acted:false },
+      { name:"Bandit",  ch:0xD0, team:1, x:12, y:8, hp:8, mhp:8, atk:4,def:2,mov:3,acted:false },
+      { name:"Thief",   ch:0xD3, team:1, x:11, y:10,hp:6, mhp:6, atk:5,def:1,mov:5,acted:false },
+      { name:"Brute",   ch:0xD5, team:1, x:14, y:9, hp:12,mhp:12,atk:7,def:3,mov:2,acted:false },
+    ];
+
+    // ===== GAME STATE =====
+    let state = 'banner';    // banner, select, move, combat, enemy_banner, enemy, win, lose
+    let turn = 1;
+    let selUnit = null;      // currently selected unit
+    let moveRange = null;    // Map: "x,y" -> true (valid destinations)
+    let atkTargets = [];     // enemy units that can be attacked after moving
+    let bannerText = '';
+    let bannerTimer = 0;
+    let logs = [];           // combat log
+
+    // Enemy turn state
+    let enemyQueue = [];
+    let enemyPhase = 'wait'; // wait, move, attack
+    let enemyTimer = 0;
+
+    // ===== HELPERS =====
+    function alive() { return units.filter(u => u.hp > 0); }
+    function teamAlive(t) { return alive().filter(u => u.team === t); }
+    function unitAt(x, y) { return alive().find(u => u.x === x && u.y === y); }
+    function terrAt(x, y) { return TERR[MAP[y][x]]; }
+
+    function inMap(x, y) { return x >= 0 && y >= 0 && x < MW && y < MH; }
+
+    // Convert mouse pixel coords to map coords
+    function mouseToMap() {
+      const mc = qx.mouseCol(), mr = qx.mouseRow();
+      const mx = mc - MX, my = mr - MY;
+      if (mx < 0 || my < 0 || mx >= MW || my >= MH) return null;
+      return { x: mx, y: my };
+    }
+
+    function addLog(msg) {
+      logs.push(msg);
+      if (logs.length > 7) logs.shift();
+    }
+
+    // BFS movement range
+    function calcMoveRange(unit) {
+      const result = new Map();
+      const queue = [{ x: unit.x, y: unit.y, m: unit.mov }];
+      result.set(unit.x + "," + unit.y, unit.mov);
+
+      while (queue.length > 0) {
+        const cur = queue.shift();
+        for (const [dx, dy] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+          const nx = cur.x + dx, ny = cur.y + dy;
+          if (!inMap(nx, ny)) continue;
+          const t = terrAt(nx, ny);
+          if (t.cost < 0) continue; // impassable
+          const rem = cur.m - t.cost;
+          if (rem < 0) continue;
+          const key = nx + "," + ny;
+          if (result.has(key) && result.get(key) >= rem) continue;
+          // Can't pass through enemies
+          const occ = unitAt(nx, ny);
+          if (occ && occ.team !== unit.team) continue;
+          result.set(key, rem);
+          queue.push({ x: nx, y: ny, m: rem });
+        }
+      }
+      // Remove tiles occupied by other units (can't end on them)
+      for (const u of alive()) {
+        if (u !== unit) result.delete(u.x + "," + u.y);
+      }
+      return result;
+    }
+
+    // Get attackable enemies adjacent to (x, y)
+    function adjEnemies(x, y, team) {
+      const targets = [];
+      for (const [dx, dy] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+        const nx = x + dx, ny = y + dy;
+        if (!inMap(nx, ny)) continue;
+        const u = unitAt(nx, ny);
+        if (u && u.team !== team) targets.push(u);
+      }
+      return targets;
+    }
+
+    // ===== COMBAT =====
+    function doAttack(atk, def) {
+      const tDef = terrAt(def.x, def.y).def;
+      const dmg = Math.max(1, atk.atk - (def.def + tDef));
+      def.hp = Math.max(0, def.hp - dmg);
+      addLog(atk.name + " hits " + def.name + "! " + dmg + " dmg");
+      if (def.hp <= 0) {
+        addLog(def.name + " defeated!");
+      }
+      // Counter-attack if defender survives and is adjacent
+      if (def.hp > 0) {
+        const tAtk = terrAt(atk.x, atk.y).def;
+        const cdmg = Math.max(1, def.atk - (atk.def + tAtk));
+        atk.hp = Math.max(0, atk.hp - cdmg);
+        addLog(def.name + " counters! " + cdmg + " dmg");
+        if (atk.hp <= 0) addLog(atk.name + " defeated!");
+      }
+    }
+
+    function checkEnd() {
+      if (teamAlive(1).length === 0) { state = 'win'; bannerText = "VICTORY!"; bannerTimer = 999; return true; }
+      if (teamAlive(0).length === 0) { state = 'lose'; bannerText = "DEFEAT..."; bannerTimer = 999; return true; }
+      return false;
+    }
+
+    // ===== TURNS =====
+    function showBanner(text, nextState) {
+      bannerText = text;
+      bannerTimer = 45;
+      state = (nextState === 'select') ? 'banner' : 'enemy_banner';
+      // Store what state to go to after banner
+      bannerNextState = nextState;
+    }
+    let bannerNextState = 'select';
+
+    function startPlayerTurn() {
+      turn++;
+      for (const u of teamAlive(0)) u.acted = false;
+      showBanner("PLAYER PHASE", 'select');
+    }
+
+    function startEnemyTurn() {
+      for (const u of teamAlive(1)) u.acted = false;
+      enemyQueue = teamAlive(1).slice();
+      enemyPhase = 'wait';
+      enemyTimer = 15;
+      selUnit = null;
+      moveRange = null;
+      showBanner("ENEMY PHASE", 'enemy');
+    }
+
+    function allPlayersDone() {
+      return teamAlive(0).every(u => u.acted);
+    }
+
+    // ===== ENEMY AI =====
+    function doEnemyTurn() {
+      if (enemyTimer > 0) { enemyTimer--; return; }
+
+      if (enemyQueue.length === 0 || teamAlive(0).length === 0) {
+        selUnit = null;
+        if (!checkEnd()) startPlayerTurn();
+        return;
+      }
+
+      const enemy = enemyQueue[0];
+      if (enemy.hp <= 0) { enemyQueue.shift(); return; }
+
+      if (enemyPhase === 'wait') {
+        selUnit = enemy;
+        moveRange = calcMoveRange(enemy);
+        enemyPhase = 'move';
+        enemyTimer = 12;
+      } else if (enemyPhase === 'move') {
+        // Find best destination: prefer tiles adjacent to player units
+        const players = teamAlive(0);
+        let bestTile = null, bestScore = -Infinity;
+
+        for (const [key] of moveRange) {
+          const [tx, ty] = key.split(",").map(Number);
+          const adjP = adjEnemies(tx, ty, 1); // enemies of enemy = players
+          let score = adjP.length > 0 ? 1000 : 0;
+          // Prefer being close to nearest player
+          let minDist = Infinity;
+          for (const p of players) {
+            const d = Math.abs(tx - p.x) + Math.abs(ty - p.y);
+            minDist = Math.min(minDist, d);
+          }
+          score -= minDist;
+          if (score > bestScore) { bestScore = score; bestTile = { x: tx, y: ty }; }
+        }
+
+        if (bestTile) {
+          enemy.x = bestTile.x;
+          enemy.y = bestTile.y;
+        }
+        enemyPhase = 'attack';
+        enemyTimer = 12;
+      } else if (enemyPhase === 'attack') {
+        const targets = adjEnemies(enemy.x, enemy.y, 1);
+        if (targets.length > 0) {
+          // Attack lowest HP target
+          targets.sort((a, b) => a.hp - b.hp);
+          doAttack(enemy, targets[0]);
+        }
+        enemy.acted = true;
+        selUnit = null;
+        moveRange = null;
+        enemyQueue.shift();
+        enemyPhase = 'wait';
+        enemyTimer = 15;
+        checkEnd();
+      }
+    }
+
+    // ===== INPUT =====
+    function handleInput() {
+      const mp = mouseToMap();
+
+      if (state === 'select') {
+        if (qx.mouseBtnp(0) && mp) {
+          const u = unitAt(mp.x, mp.y);
+          if (u && u.team === 0 && !u.acted) {
+            selUnit = u;
+            moveRange = calcMoveRange(u);
+            state = 'move';
+          }
+        }
+        // End turn: right-click or click End Turn button
+        if (qx.mouseBtnp(2)) {
+          startEnemyTurn();
+        }
+        // Check End Turn button click
+        if (qx.mouseBtnp(0) && isEndTurnBtn()) {
+          startEnemyTurn();
+        }
+      }
+      else if (state === 'move') {
+        // Right-click to deselect
+        if (qx.mouseBtnp(2)) {
+          selUnit = null; moveRange = null; state = 'select';
+          return;
+        }
+        if (qx.mouseBtnp(0) && mp) {
+          const key = mp.x + "," + mp.y;
+          if (moveRange && moveRange.has(key)) {
+            // Move unit
+            selUnit.x = mp.x;
+            selUnit.y = mp.y;
+            moveRange = null;
+            // Check for attackable enemies
+            atkTargets = adjEnemies(selUnit.x, selUnit.y, 0);
+            if (atkTargets.length > 0) {
+              state = 'combat';
+            } else {
+              selUnit.acted = true;
+              selUnit = null;
+              state = 'select';
+              if (allPlayersDone()) startEnemyTurn();
+            }
+          } else {
+            // Clicked outside range - deselect
+            selUnit = null; moveRange = null; state = 'select';
+          }
+        }
+      }
+      else if (state === 'combat') {
+        // Right-click to skip attacking
+        if (qx.mouseBtnp(2)) {
+          selUnit.acted = true;
+          selUnit = null; atkTargets = []; state = 'select';
+          if (allPlayersDone()) startEnemyTurn();
+          return;
+        }
+        if (qx.mouseBtnp(0) && mp) {
+          const target = atkTargets.find(u => u.x === mp.x && u.y === mp.y);
+          if (target) {
+            doAttack(selUnit, target);
+            selUnit.acted = true;
+            selUnit = null; atkTargets = []; state = 'select';
+            if (!checkEnd() && allPlayersDone()) startEnemyTurn();
+          }
+        }
+      }
+    }
+
+    function isEndTurnBtn() {
+      const mc = qx.mouseCol(), mr = qx.mouseRow();
+      return mc >= PX && mc <= PX + 13 && mr === 12;
+    }
+
+    // ===== DRAWING =====
+    function draw() {
+      qx.color(7, 0);
+      qx.cls();
+      drawMap();
+      drawUnits();
+      drawPanel();
+      drawLog();
+      drawCursor();
+      if (bannerTimer > 0) drawBanner();
+    }
+
+    function drawMap() {
+      for (let y = 0; y < MH; y++) {
+        for (let x = 0; x < MW; x++) {
+          const t = terrAt(x, y);
+          let bg = 0;
+          const key = x + "," + y;
+
+          // Highlight movement range
+          if (state === 'move' && moveRange && moveRange.has(key)) {
+            bg = 1; // dark blue
+          }
+          // Highlight attack targets
+          if (state === 'combat' && atkTargets.find(u => u.x === x && u.y === y)) {
+            bg = 2; // dark red
+          }
+          // During enemy turn, show enemy move range
+          if (state === 'enemy' && moveRange && moveRange.has(key)) {
+            bg = 2;
+          }
+
+          qx.color(t.fg, bg);
+          qx.locate(MX + x, MY + y);
+          qx.printChar(t.ch);
+        }
+      }
+    }
+
+    function drawUnits() {
+      for (const u of alive()) {
+        const teamColor = u.team === 0 ? 9 : 10;  // blue / red
+        const dimColor = u.team === 0 ? 1 : 2;    // dark blue / dark red
+        const fg = u.acted ? dimColor : teamColor;
+        // Highlight selected unit
+        const isSelected = (u === selUnit);
+        qx.color(isSelected ? 14 : fg); // yellow if selected
+        qx.locate(MX + u.x, MY + u.y);
+        qx.printChar(u.ch);
+
+        // HP bar (pixel level)
+        const px = (MX + u.x) * 8;
+        const py = (MY + u.y) * 8 + 6;
+        const barW = Math.max(1, Math.ceil(u.hp / u.mhp * 7));
+        // Bar background (dark)
+        qx.color(8);
+        qx.fillRect(px, py, 8, 2);
+        // Bar fill
+        const hpRatio = u.hp / u.mhp;
+        qx.color(hpRatio > 0.5 ? 12 : hpRatio > 0.25 ? 14 : 10);
+        qx.fillRect(px, py, barW, 2);
+      }
+    }
+
+    function drawPanel() {
+      const mp = mouseToMap();
+
+      // Title
+      qx.color(14, 0);
+      qx.locate(PX, 1);
+      qx.print("TACTICS");
+      qx.color(7);
+      qx.locate(PX, 2);
+      qx.print("Turn " + turn);
+
+      // Selected unit info
+      const showUnit = selUnit || (mp ? unitAt(mp.x, mp.y) : null);
+      if (showUnit) {
+        const tc = showUnit.team === 0 ? 9 : 10;
+        qx.color(tc);
+        qx.locate(PX, 4);
+        qx.print(showUnit.name + "        ");
+        // HP bar in panel
+        const hpRatio = showUnit.hp / showUnit.mhp;
+        qx.color(hpRatio > 0.5 ? 12 : hpRatio > 0.25 ? 14 : 10);
+        qx.locate(PX, 5);
+        qx.print("HP ");
+        const barLen = 8;
+        const filled = Math.ceil(hpRatio * barLen);
+        for (let i = 0; i < barLen; i++) {
+          qx.printChar(i < filled ? 0xDB : 0xB0); // filled block / light shade
+        }
+        qx.color(7);
+        qx.print(" " + showUnit.hp + "/" + showUnit.mhp);
+        qx.locate(PX, 6);
+        qx.print("ATK " + showUnit.atk + "  DEF " + showUnit.def);
+        qx.locate(PX, 7);
+        qx.print("MOV " + showUnit.mov);
+
+        // Show damage preview in combat state
+        if (state === 'combat' && mp) {
+          const target = atkTargets.find(u => u.x === mp.x && u.y === mp.y);
+          if (target) {
+            const tDef = terrAt(target.x, target.y).def;
+            const dmg = Math.max(1, selUnit.atk - (target.def + tDef));
+            qx.color(10);
+            qx.locate(PX, 8);
+            qx.print("-> " + dmg + " dmg");
+          }
+        }
+      }
+
+      // Terrain info on hover
+      if (mp) {
+        const t = terrAt(mp.x, mp.y);
+        qx.color(8);
+        qx.locate(PX, 10);
+        qx.print(t.name + "       ");
+        if (t.def > 0) {
+          qx.locate(PX, 11);
+          qx.print("DEF +" + t.def + "  ");
+        } else {
+          qx.locate(PX, 11);
+          qx.print("       ");
+        }
+      }
+
+      // End Turn button (only during player phase)
+      if (state === 'select' || state === 'move' || state === 'combat') {
+        const hover = isEndTurnBtn();
+        qx.color(hover ? 14 : 7, hover ? 1 : 0);
+        qx.locate(PX, 12);
+        qx.print("[ End Turn ]");
+        qx.color(7, 0);
+      }
+
+      // State instructions
+      qx.color(8);
+      qx.locate(0, 14);
+      if (state === 'select') qx.print(" Click a blue unit to select ");
+      else if (state === 'move') qx.print(" Click blue tile to move     ");
+      else if (state === 'combat') qx.print(" Click red enemy to attack   ");
+      else if (state === 'enemy') qx.print(" Enemy is thinking...        ");
+      else if (state === 'win') qx.print(" You won! Refresh to replay. ");
+      else if (state === 'lose') qx.print(" Defeated! Refresh to replay.");
+    }
+
+    function drawLog() {
+      for (let i = 0; i < logs.length && i < 7; i++) {
+        qx.color(7);
+        qx.locate(0, 16 + i);
+        qx.print(logs[i]);
+      }
+    }
+
+    function drawCursor() {
+      const mp = mouseToMap();
+      if (!mp) return;
+      const px = (MX + mp.x) * 8;
+      const py = (MY + mp.y) * 8;
+      qx.color(15);
+      qx.drawRect(px, py, 8, 8);
+    }
+
+    function drawBanner() {
+      const w = bannerText.length + 6;
+      const h = 3;
+      const bx = Math.floor((MW - w) / 2) + MX;
+      const by = Math.floor(MH / 2) - 1 + MY;
+      qx.color(15, 0);
+      qx.locate(bx, by);
+      qx.printBox(w, h);
+      qx.locate(bx + 3, by + 1);
+      qx.print(bannerText);
+    }
+
+    // ===== MAIN LOOP =====
+    function update() {
+      // Banner countdown
+      if (bannerTimer > 0) {
+        bannerTimer--;
+        if (bannerTimer <= 0) {
+          state = bannerNextState;
+        }
+      }
+
+      // Enemy turn processing
+      if (state === 'enemy') {
+        doEnemyTurn();
+      }
+
+      // Player input (only when not in banner/enemy/gameover)
+      if (state === 'select' || state === 'move' || state === 'combat') {
+        handleInput();
+      }
+
+      draw();
+    }
+
+    async function main() {
+      addLog("Defeat all enemies!");
+      addLog("Right-click to deselect/end turn");
+      showBanner("PLAYER PHASE", 'select');
+      qx.frame(update, 30);
+    }
+
+    window.addEventListener("load", () => qx.init(main));
+  </script>
+</head>
+<body>
+</body>
+</html>

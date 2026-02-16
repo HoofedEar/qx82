@@ -196,6 +196,30 @@ export class TextRenderer {
     main.markDirty();
   }
 
+  printCharHFlip(ch, n) {
+    if (n === undefined || isNaN(n)) n = 1;
+    qut.checkNumber("ch", ch);
+    qut.checkNumber("n", n);
+    while (n-- > 0) {
+      this.put_hflip_(ch, main.drawState.cursorCol,
+        main.drawState.cursorRow, main.drawState.fgColor, main.drawState.bgColor);
+      main.drawState.cursorCol--;
+    }
+    main.markDirty();
+  }
+
+  printCharVFlip(ch, n) {
+    if (n === undefined || isNaN(n)) n = 1;
+    qut.checkNumber("ch", ch);
+    qut.checkNumber("n", n);
+    while (n-- > 0) {
+      this.put_vflip_(ch, main.drawState.cursorCol,
+        main.drawState.cursorRow, main.drawState.fgColor, main.drawState.bgColor);
+      main.drawState.cursorCol++;
+    }
+    main.markDirty();
+  }
+
   // Prints a character as a "sprite" at a raw x, y position.
   spr(ch, x, y) {
     qut.checkNumber("ch", ch);
@@ -205,7 +229,7 @@ export class TextRenderer {
   }
 
   // Draws text at the given pixel coordinates, with no cursor movement.
-  drawText(x, y, text, fontName) {
+  drawText(x, y, text, fontName, brightness = null) {
     qut.checkNumber("x", x);
     qut.checkNumber("y", y);
     qut.checkString("text", text);
@@ -221,10 +245,22 @@ export class TextRenderer {
       const ch = text.charCodeAt(i);
       if (ch === 10) { x = x0; y += font.getCharHeight(); }
       else {
-        this.putxy_(ch, x, y, main.drawState.fgColor, main.drawState.bgColor, font);
+        this.putxy_(ch, x, y, main.drawState.fgColor, main.drawState.bgColor, font, brightness);
         x += font.getCharWidth();
       }
     }
+  }
+
+  // Draws text at the given pixel coordinates with custom brightness, with no cursor movement.
+  drawTextWithBrightness(x, y, text, brightness, fontName) {
+    const savedBrightness = main.drawState.brightness;
+    main.setBrightness(brightness);
+
+    // Call the regular drawText function
+    this.drawText(x, y, text, fontName);
+
+    // Restore brightness
+    main.setBrightness(savedBrightness);
   }
 
   // Returns {cols, rows}.
@@ -314,7 +350,23 @@ export class TextRenderer {
     this.putxy_(ch, x, y, fgColor, bgColor);
   }
 
-  putxy_(ch, x, y, fgColor, bgColor, font = null) {
+  put_hflip_(ch, col, row, fgColor, bgColor) {
+    const chrW = CONFIG.CHR_WIDTH;
+    const chrH = CONFIG.CHR_HEIGHT;
+    const x = Math.round(col * chrW);
+    const y = Math.round(row * chrH);
+    this.putxy_hflip_(ch, x, y, fgColor, bgColor);
+  }
+
+  put_vflip_(ch, col, row, fgColor, bgColor) {
+    const chrW = CONFIG.CHR_WIDTH;
+    const chrH = CONFIG.CHR_HEIGHT;
+    const x = Math.round(col * chrW);
+    const y = Math.round(row * chrH);
+    this.putxy_vflip_(ch, x, y, fgColor, bgColor);
+  }
+
+  putxy_(ch, x, y, fgColor, bgColor, font = null, brightness = null) {
     font = font || this.curFont_;
     const chrW = font.getCharWidth();
     const chrH = font.getCharHeight();
@@ -325,15 +377,121 @@ export class TextRenderer {
     y = Math.round(y);
 
     if (bgColor >= 0) {
-      main.ctx.fillStyle = main.getColorHex(bgColor);
+      // Use brightness-aware color function for background
+      main.ctx.fillStyle = main.getColorHexWithBrightness(bgColor, brightness);
       main.ctx.fillRect(x, y, chrW, chrH);
     }
 
     const color = qut.clamp(fgColor, 0, CONFIG.COLORS.length - 1);
     const img = font.getImageForColor(color);
 
-    main.ctx.drawImage(img, 
-      fontCol * chrW, fontRow * chrH, chrW, chrH, x, y, chrW, chrH);
+    // If we're using custom brightness, we need to apply a filter
+    if (brightness !== null || main.drawState.brightness < 1.0) {
+      // Save context state
+      main.ctx.save();
+
+      // Apply brightness using globalAlpha
+      const actualBrightness = brightness !== null ? brightness : main.drawState.brightness;
+      main.ctx.globalAlpha = actualBrightness;
+
+      // Draw with brightness applied
+      main.ctx.drawImage(img,
+        fontCol * chrW, fontRow * chrH, chrW, chrH, x, y, chrW, chrH);
+
+      // Restore context state
+      main.ctx.restore();
+    } else {
+      // Normal drawing at full brightness
+      main.ctx.drawImage(img,
+        fontCol * chrW, fontRow * chrH, chrW, chrH, x, y, chrW, chrH);
+    }
+
+    main.markDirty();
+  }
+
+  putxy_hflip_(ch, x, y, fgColor, bgColor, font = null, brightness = null) {
+    font = font || this.curFont_;
+    const chrW = font.getCharWidth();
+    const chrH = font.getCharHeight();
+    const fontRow = Math.floor(ch / 16);
+    const fontCol = ch % 16;
+
+    x = Math.round(x);
+    y = Math.round(y);
+
+    if (bgColor >= 0) {
+      main.ctx.fillStyle = main.getColorHexWithBrightness(bgColor, brightness);
+      main.ctx.fillRect(x, y, chrW, chrH);
+    }
+
+    const color = qut.clamp(fgColor, 0, CONFIG.COLORS.length - 1);
+    const img = font.getImageForColor(color);
+
+    // Save context state before transformations
+    main.ctx.save();
+
+    // Translate to the position where we want to draw
+    main.ctx.translate(x + chrW, y);
+
+    // Scale horizontally by -1 to flip
+    main.ctx.scale(-1, 1);
+
+    // Apply brightness if needed
+    if (brightness !== null || main.drawState.brightness < 1.0) {
+      const actualBrightness = brightness !== null ? brightness : main.drawState.brightness;
+      main.ctx.globalAlpha = actualBrightness;
+    }
+
+    // Draw the image at origin (0,0) since we've already translated
+    main.ctx.drawImage(img,
+      fontCol * chrW, fontRow * chrH, chrW, chrH, 0, 0, chrW, chrH);
+
+    // Restore the context to its original state
+    main.ctx.restore();
+
+    main.markDirty();
+  }
+
+  putxy_vflip_(ch, x, y, fgColor, bgColor, font = null, brightness = null) {
+    font = font || this.curFont_;
+    const chrW = font.getCharWidth();
+    const chrH = font.getCharHeight();
+    const fontRow = Math.floor(ch / 16);
+    const fontCol = ch % 16;
+
+    x = Math.round(x);
+    y = Math.round(y);
+
+    if (bgColor >= 0) {
+      main.ctx.fillStyle = main.getColorHexWithBrightness(bgColor, brightness);
+      main.ctx.fillRect(x, y, chrW, chrH);
+    }
+
+    const color = qut.clamp(fgColor, 0, CONFIG.COLORS.length - 1);
+    const img = font.getImageForColor(color);
+
+    // Save context state before transformations
+    main.ctx.save();
+
+    // Translate to the position where we want to draw (bottom of the character)
+    main.ctx.translate(x, y + chrH);
+
+    // Scale vertically by -1 to flip
+    main.ctx.scale(1, -1);
+
+    // Apply brightness if needed
+    if (brightness !== null || main.drawState.brightness < 1.0) {
+      const actualBrightness = brightness !== null ? brightness : main.drawState.brightness;
+      main.ctx.globalAlpha = actualBrightness;
+    }
+
+    // Draw the image at origin (0,0) since we've already translated
+    main.ctx.drawImage(img,
+      fontCol * chrW, fontRow * chrH, chrW, chrH, 0, 0, chrW, chrH);
+
+    // Restore the context to its original state
+    main.ctx.restore();
+
     main.markDirty();
   }
 

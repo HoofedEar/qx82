@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Example - Mouse</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <style type="text/css">
+  body {
+    background: black;
+    color: white;
+  }
+  </style>
+
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./three-0.156.1/three.module.min.js",
+        "three/addons/": "./three-0.156.1/addons/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as qx from "./qx82/qx.js";
+    import * as qxa from "./qx82/qxa.js";
+
+    // Trail of dots left by clicking
+    const dots = [];
+
+    async function main() {
+      qx.frame(update, 30);
+    }
+
+    function update() {
+      const mx = qx.mouseX();
+      const my = qx.mouseY();
+      const mcol = qx.mouseCol();
+      const mrow = qx.mouseRow();
+      const onCanvas = mx >= 0;
+
+      // Left click: place a dot
+      if (qx.mouseBtnp(0) && onCanvas) {
+        dots.push({ x: mx, y: my, color: 10 }); // green dot
+      }
+      // Right click: place a different dot
+      if (qx.mouseBtnp(2) && onCanvas) {
+        dots.push({ x: mx, y: my, color: 12 }); // blue dot
+      }
+
+      // Draw
+      qx.color(7, 0);
+      qx.cls();
+
+      // Title
+      qx.color(14);
+      qx.locate(1, 1);
+      qx.print("MOUSE DEMO");
+
+      // Show mouse info
+      qx.color(7);
+      qx.locate(1, 3);
+      if (onCanvas) {
+        qx.print("Pixel: " + mx + ", " + my + "   ");
+        qx.locate(1, 4);
+        qx.print("Grid:  " + mcol + ", " + mrow + "   ");
+      } else {
+        qx.print("Mouse is off canvas");
+        qx.locate(1, 4);
+        qx.print("                    ");
+      }
+
+      // Show button state
+      qx.locate(1, 6);
+      qx.color(qx.mouseBtn(0) ? 10 : 8);
+      qx.print("LEFT ");
+      qx.color(qx.mouseBtn(2) ? 12 : 8);
+      qx.print("RIGHT");
+
+      // Instructions
+      qx.color(7);
+      qx.locate(1, 8);
+      qx.print("Left click: green dot");
+      qx.locate(1, 9);
+      qx.print("Right click: blue dot");
+
+      // Draw all placed dots
+      for (const dot of dots) {
+        qx.color(dot.color);
+        qx.fillRect(dot.x - 2, dot.y - 2, 5, 5);
+      }
+
+      // Draw crosshair at mouse position
+      if (onCanvas) {
+        qx.color(15);
+        qx.fillRect(mx - 4, my, 9, 1);
+        qx.fillRect(mx, my - 4, 1, 9);
+      }
+
+      // Highlight the character cell the mouse is in
+      if (onCanvas) {
+        qx.color(15);
+        qx.drawRect(mcol * 8, mrow * 8, 8, 8);
+      }
+    }
+
+    window.addEventListener("load", () => qx.init(main));
+  </script>
+</head>
+<body>
+</body>
+</html>

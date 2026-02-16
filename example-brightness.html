@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Example - Brightness</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <style type="text/css">
+  body {
+    background: black;
+    color: white;
+  }
+  </style>
+
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./three-0.156.1/three.module.min.js",
+        "three/addons/": "./three-0.156.1/addons/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as qx from "./qx82/qx.js";
+    import * as qxa from "./qx82/qxa.js";
+
+    let globalBrightness = 1.0;
+
+    async function main() {
+      while (true) {
+        render();
+        const k = await qxa.key();
+        if (k === "ArrowUp") globalBrightness = Math.min(1.0, globalBrightness + 0.1);
+        if (k === "ArrowDown") globalBrightness = Math.max(0.0, globalBrightness - 0.1);
+      }
+    }
+
+    function render() {
+      // Set global brightness, then draw
+      qx.brightness(globalBrightness);
+
+      qx.color(7, 0);
+      qx.cls();
+
+      // Title
+      qx.color(14);
+      qx.locate(1, 1);
+      qx.print("BRIGHTNESS DEMO");
+
+      // Show current global brightness value
+      qx.color(7);
+      qx.locate(1, 3);
+      qx.print("Global: " + globalBrightness.toFixed(1));
+      qx.locate(1, 4);
+      qx.print("Up/Down to change");
+
+      // Reset to full brightness for the per-element demos
+      qx.brightness(1.0);
+
+      // Draw a gradient of text at different brightness levels
+      qx.color(15);
+      qx.locate(1, 6);
+      qx.print("Per-element brightness:");
+
+      for (let i = 0; i <= 10; i++) {
+        const b = i / 10;
+        qx.drawTextWithBrightness(
+          8, 64 + i * 9,
+          "Hello! " + b.toFixed(1),
+          b
+        );
+      }
+
+      // Colored rectangles at different brightness
+      qx.locate(1, 20);
+      qx.color(7);
+      for (let i = 0; i <= 10; i++) {
+        const b = i / 10;
+        qx.brightness(b);
+        qx.color(4 + (i % 12)); // cycle through colors
+        qx.fillRect(8 + i * 20, 168, 16, 16);
+      }
+
+      // Reset brightness
+      qx.brightness(1.0);
+    }
+
+    window.addEventListener("load", () => qx.init(main));
+  </script>
+</head>
+<body>
+</body>
+</html>
