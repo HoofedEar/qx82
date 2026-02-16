@@ -58,30 +58,45 @@
       if (MAP[i].length !== MW) console.error("Row " + i + " is " + MAP[i].length + " wide, expected " + MW);
     }
 
-    // ===== UNITS =====
-    let units = [
-      { name:"Knight",  ch:0xC0, team:0, x:2,  y:1, hp:10,mhp:10,atk:5,def:3,mov:3,acted:false },
-      { name:"Scout",   ch:0xC1, team:0, x:5,  y:3, hp:7, mhp:7, atk:4,def:1,mov:5,acted:false },
-      { name:"Paladin", ch:0xC0, team:0, x:1,  y:3, hp:13,mhp:13,atk:6,def:4,mov:2,acted:false },
-      { name:"Bandit",  ch:0xD0, team:1, x:12, y:8, hp:8, mhp:8, atk:4,def:2,mov:3,acted:false },
-      { name:"Thief",   ch:0xD3, team:1, x:11, y:10,hp:6, mhp:6, atk:5,def:1,mov:5,acted:false },
-      { name:"Brute",   ch:0xD5, team:1, x:14, y:9, hp:12,mhp:12,atk:7,def:3,mov:2,acted:false },
+    // ===== INITIAL UNIT DATA =====
+    const INIT_UNITS = [
+      { name:"Knight",  ch:0xC0, team:0, x:2,  y:1, hp:10,mhp:10,atk:5,def:3,mov:3 },
+      { name:"Scout",   ch:0xC1, team:0, x:5,  y:3, hp:7, mhp:7, atk:4,def:1,mov:5, sprFlip:true },
+      { name:"Paladin", ch:0xC0, team:0, x:1,  y:3, hp:13,mhp:13,atk:6,def:4,mov:2 },
+      { name:"Bandit",  ch:0xD0, team:1, x:12, y:8, hp:8, mhp:8, atk:4,def:2,mov:3 },
+      { name:"Thief",   ch:0xD3, team:1, x:11, y:10,hp:6, mhp:6, atk:5,def:1,mov:5 },
+      { name:"Brute",   ch:0xD5, team:1, x:14, y:9, hp:12,mhp:12,atk:7,def:3,mov:2 },
     ];
+
+    // ===== UNITS =====
+    let units = [];
 
     // ===== GAME STATE =====
     let state = 'banner';    // banner, select, move, combat, enemy_banner, enemy, win, lose
     let turn = 1;
     let selUnit = null;      // currently selected unit
-    let moveRange = null;    // Map: "x,y" -> true (valid destinations)
+    let moveRange = null;    // Map: "x,y" -> remaining movement
+    let moveParents = null;  // Map: "x,y" -> "px,py" for path reconstruction
     let atkTargets = [];     // enemy units that can be attacked after moving
+    let atkReach = null;     // Set: "x,y" enemies reachable from move range
     let bannerText = '';
     let bannerTimer = 0;
+    let bannerNextState = 'select';
     let logs = [];           // combat log
 
     // Enemy turn state
     let enemyQueue = [];
     let enemyPhase = 'wait'; // wait, move, attack
     let enemyTimer = 0;
+
+    // Animation state (path-based: unit walks tile by tile)
+    let animUnit = null;
+    let animPath = [];       // array of {x, y} grid positions
+    let animStep = 0;        // current path segment index
+    let animStepProgress = 0; // frames into current step (0..3)
+    let animCallback = null;
+    let floatingNums = [];
+    let frameCount = 0;
 
     // ===== HELPERS =====
     function alive() { return units.filter(u => u.hp > 0); }
@@ -100,15 +115,18 @@
     }
 
     function addLog(msg) {
-      logs.push(msg);
+      logs.push(msg.substring(0, 32));
       if (logs.length > 7) logs.shift();
     }
 
-    // BFS movement range
+    // BFS movement range (also builds parent map for path reconstruction)
     function calcMoveRange(unit) {
       const result = new Map();
+      const parents = new Map();
+      const startKey = unit.x + "," + unit.y;
       const queue = [{ x: unit.x, y: unit.y, m: unit.mov }];
-      result.set(unit.x + "," + unit.y, unit.mov);
+      result.set(startKey, unit.mov);
+      parents.set(startKey, null);
 
       while (queue.length > 0) {
         const cur = queue.shift();
@@ -125,6 +143,7 @@
           const occ = unitAt(nx, ny);
           if (occ && occ.team !== unit.team) continue;
           result.set(key, rem);
+          parents.set(key, cur.x + "," + cur.y);
           queue.push({ x: nx, y: ny, m: rem });
         }
       }
@@ -132,7 +151,34 @@
       for (const u of alive()) {
         if (u !== unit) result.delete(u.x + "," + u.y);
       }
-      return result;
+      return { range: result, parents: parents };
+    }
+
+    // Reconstruct tile-by-tile path from BFS parent map
+    function getPath(parents, toX, toY) {
+      const path = [];
+      let key = toX + "," + toY;
+      while (key !== null) {
+        const [x, y] = key.split(",").map(Number);
+        path.unshift({ x, y });
+        key = parents.get(key);
+      }
+      return path;
+    }
+
+    // Calculate attack reach: enemy positions attackable from any reachable tile
+    function calcAtkReach(unit, range) {
+      const reach = new Set();
+      for (const [key] of range) {
+        const [tx, ty] = key.split(",").map(Number);
+        for (const [dx, dy] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+          const nx = tx + dx, ny = ty + dy;
+          if (!inMap(nx, ny)) continue;
+          const u = unitAt(nx, ny);
+          if (u && u.team !== unit.team) reach.add(nx + "," + ny);
+        }
+      }
+      return reach;
     }
 
     // Get attackable enemies adjacent to (x, y)
@@ -147,28 +193,72 @@
       return targets;
     }
 
+    // ===== ANIMATION =====
+    function startPathAnim(unit, path, callback) {
+      if (path.length <= 1) {
+        if (callback) callback();
+        return;
+      }
+      // Set facing based on last step direction
+      const last = path[path.length - 1];
+      const prev = path[path.length - 2];
+      if (last.x > prev.x) unit.facing = 1;
+      else if (last.x < prev.x) unit.facing = -1;
+      animUnit = unit;
+      animPath = path;
+      animStep = 0;
+      animStepProgress = 0;
+      animCallback = callback;
+      // Update logical position to destination immediately
+      const dest = path[path.length - 1];
+      unit.x = dest.x;
+      unit.y = dest.y;
+    }
+
+    function addFloatingNum(mapX, mapY, text, color) {
+      floatingNums.push({
+        x: (MX + mapX) * 8,
+        y: (MY + mapY) * 8,
+        text: text,
+        color: color,
+        life: 20
+      });
+    }
+
     // ===== COMBAT =====
+    function calcDmg(atkUnit, defUnit) {
+      const tDef = terrAt(defUnit.x, defUnit.y).def;
+      return Math.max(1, atkUnit.atk - (defUnit.def + tDef));
+    }
+
     function doAttack(atk, def) {
-      const tDef = terrAt(def.x, def.y).def;
-      const dmg = Math.max(1, atk.atk - (def.def + tDef));
+      // Face each other
+      if (def.x > atk.x) atk.facing = 1;
+      else if (def.x < atk.x) atk.facing = -1;
+      if (atk.x > def.x) def.facing = 1;
+      else if (atk.x < def.x) def.facing = -1;
+      const dmg = calcDmg(atk, def);
       def.hp = Math.max(0, def.hp - dmg);
-      addLog(atk.name + " hits " + def.name + "! " + dmg + " dmg");
+      def.flashTimer = 6;
+      addFloatingNum(def.x, def.y, "-" + dmg, 10);
+      addLog(atk.name + " hits " + def.name + "! " + dmg + "dmg");
       if (def.hp <= 0) {
         addLog(def.name + " defeated!");
       }
-      // Counter-attack if defender survives and is adjacent
+      // Counter-attack if defender survives
       if (def.hp > 0) {
-        const tAtk = terrAt(atk.x, atk.y).def;
-        const cdmg = Math.max(1, def.atk - (atk.def + tAtk));
+        const cdmg = calcDmg(def, atk);
         atk.hp = Math.max(0, atk.hp - cdmg);
+        atk.flashTimer = 6;
+        addFloatingNum(atk.x, atk.y, "-" + cdmg, 14);
         addLog(def.name + " counters! " + cdmg + " dmg");
         if (atk.hp <= 0) addLog(atk.name + " defeated!");
       }
     }
 
     function checkEnd() {
-      if (teamAlive(1).length === 0) { state = 'win'; bannerText = "VICTORY!"; bannerTimer = 999; return true; }
-      if (teamAlive(0).length === 0) { state = 'lose'; bannerText = "DEFEAT..."; bannerTimer = 999; return true; }
+      if (teamAlive(1).length === 0) { state = 'win'; return true; }
+      if (teamAlive(0).length === 0) { state = 'lose'; return true; }
       return false;
     }
 
@@ -177,10 +267,8 @@
       bannerText = text;
       bannerTimer = 45;
       state = (nextState === 'select') ? 'banner' : 'enemy_banner';
-      // Store what state to go to after banner
       bannerNextState = nextState;
     }
-    let bannerNextState = 'select';
 
     function startPlayerTurn() {
       turn++;
@@ -195,6 +283,8 @@
       enemyTimer = 15;
       selUnit = null;
       moveRange = null;
+      moveParents = null;
+      atkReach = null;
       showBanner("ENEMY PHASE", 'enemy');
     }
 
@@ -202,22 +292,60 @@
       return teamAlive(0).every(u => u.acted);
     }
 
+    // ===== RESTART =====
+    function restartGame() {
+      units = INIT_UNITS.map(u => ({ ...u, acted: false, flashTimer: 0, facing: u.team === 0 ? 1 : -1 }));
+      state = 'banner';
+      turn = 1;
+      selUnit = null;
+      moveRange = null;
+      moveParents = null;
+      atkReach = null;
+      atkTargets = [];
+      bannerText = '';
+      bannerTimer = 0;
+      bannerNextState = 'select';
+      logs = [];
+      enemyQueue = [];
+      enemyPhase = 'wait';
+      enemyTimer = 0;
+      animUnit = null;
+      animPath = [];
+      animCallback = null;
+      floatingNums = [];
+      frameCount = 0;
+      addLog("Defeat all enemies!");
+      addLog("Keys: Esc/E/W/R");
+      showBanner("PLAYER PHASE", 'select');
+    }
+
     // ===== ENEMY AI =====
     function doEnemyTurn() {
+      if (animUnit) return; // pause AI during animation
       if (enemyTimer > 0) { enemyTimer--; return; }
 
       if (enemyQueue.length === 0 || teamAlive(0).length === 0) {
         selUnit = null;
+        moveRange = null;
+        moveParents = null;
         if (!checkEnd()) startPlayerTurn();
         return;
       }
 
       const enemy = enemyQueue[0];
-      if (enemy.hp <= 0) { enemyQueue.shift(); return; }
+      if (enemy.hp <= 0) {
+        enemyQueue.shift();
+        selUnit = null;
+        moveRange = null;
+        moveParents = null;
+        return;
+      }
 
       if (enemyPhase === 'wait') {
         selUnit = enemy;
-        moveRange = calcMoveRange(enemy);
+        const mr = calcMoveRange(enemy);
+        moveRange = mr.range;
+        moveParents = mr.parents;
         enemyPhase = 'move';
         enemyTimer = 12;
       } else if (enemyPhase === 'move') {
@@ -239,12 +367,17 @@
           if (score > bestScore) { bestScore = score; bestTile = { x: tx, y: ty }; }
         }
 
-        if (bestTile) {
-          enemy.x = bestTile.x;
-          enemy.y = bestTile.y;
+        if (bestTile && (bestTile.x !== enemy.x || bestTile.y !== enemy.y)) {
+          addLog(enemy.name + " moves.");
+          const path = getPath(moveParents, bestTile.x, bestTile.y);
+          startPathAnim(enemy, path, () => {
+            enemyPhase = 'attack';
+            enemyTimer = 12;
+          });
+        } else {
+          enemyPhase = 'attack';
+          enemyTimer = 12;
         }
-        enemyPhase = 'attack';
-        enemyTimer = 12;
       } else if (enemyPhase === 'attack') {
         const targets = adjEnemies(enemy.x, enemy.y, 1);
         if (targets.length > 0) {
@@ -255,6 +388,7 @@
         enemy.acted = true;
         selUnit = null;
         moveRange = null;
+        moveParents = null;
         enemyQueue.shift();
         enemyPhase = 'wait';
         enemyTimer = 15;
@@ -264,14 +398,23 @@
 
     // ===== INPUT =====
     function handleInput() {
+      if (animUnit) return; // block input during animation
       const mp = mouseToMap();
 
       if (state === 'select') {
+        // Keyboard: E or Enter to end turn
+        if (qx.keyp("e") || qx.keyp("enter")) {
+          startEnemyTurn();
+          return;
+        }
         if (qx.mouseBtnp(0) && mp) {
           const u = unitAt(mp.x, mp.y);
           if (u && u.team === 0 && !u.acted) {
             selUnit = u;
-            moveRange = calcMoveRange(u);
+            const mr = calcMoveRange(u);
+            moveRange = mr.range;
+            moveParents = mr.parents;
+            atkReach = calcAtkReach(u, moveRange);
             state = 'move';
           }
         }
@@ -285,37 +428,59 @@
         }
       }
       else if (state === 'move') {
+        // Keyboard: Escape to deselect
+        if (qx.keyp("escape")) {
+          selUnit = null; moveRange = null; moveParents = null; atkReach = null; state = 'select';
+          return;
+        }
         // Right-click to deselect
         if (qx.mouseBtnp(2)) {
-          selUnit = null; moveRange = null; state = 'select';
+          selUnit = null; moveRange = null; moveParents = null; atkReach = null; state = 'select';
           return;
         }
         if (qx.mouseBtnp(0) && mp) {
           const key = mp.x + "," + mp.y;
           if (moveRange && moveRange.has(key)) {
-            // Move unit
-            selUnit.x = mp.x;
-            selUnit.y = mp.y;
-            moveRange = null;
-            // Check for attackable enemies
-            atkTargets = adjEnemies(selUnit.x, selUnit.y, 0);
-            if (atkTargets.length > 0) {
-              state = 'combat';
+            const fromX = selUnit.x, fromY = selUnit.y;
+            const toX = mp.x, toY = mp.y;
+            atkReach = null;
+            const afterMove = () => {
+              moveRange = null;
+              moveParents = null;
+              atkTargets = adjEnemies(selUnit.x, selUnit.y, 0);
+              if (atkTargets.length > 0) {
+                state = 'combat';
+              } else {
+                selUnit.acted = true;
+                selUnit = null;
+                state = 'select';
+                if (allPlayersDone()) startEnemyTurn();
+              }
+            };
+            if (fromX !== toX || fromY !== toY) {
+              const path = getPath(moveParents, toX, toY);
+              startPathAnim(selUnit, path, afterMove);
             } else {
-              selUnit.acted = true;
-              selUnit = null;
-              state = 'select';
-              if (allPlayersDone()) startEnemyTurn();
+              afterMove();
             }
           } else {
             // Clicked outside range - deselect
-            selUnit = null; moveRange = null; state = 'select';
+            selUnit = null; moveRange = null; moveParents = null; atkReach = null; state = 'select';
           }
         }
       }
       else if (state === 'combat') {
-        // Right-click to skip attacking
+        // Keyboard: Escape or W to wait (skip attack)
+        if (qx.keyp("escape") || qx.keyp("w")) {
+          addLog(selUnit.name + " waits.");
+          selUnit.acted = true;
+          selUnit = null; atkTargets = []; state = 'select';
+          if (allPlayersDone()) startEnemyTurn();
+          return;
+        }
+        // Right-click to skip attacking (wait)
         if (qx.mouseBtnp(2)) {
+          addLog(selUnit.name + " waits.");
           selUnit.acted = true;
           selUnit = null; atkTargets = []; state = 'select';
           if (allPlayersDone()) startEnemyTurn();
@@ -331,11 +496,17 @@
           }
         }
       }
+      else if (state === 'win' || state === 'lose') {
+        // Keyboard: R to restart
+        if (qx.keyp("r")) {
+          restartGame();
+        }
+      }
     }
 
     function isEndTurnBtn() {
       const mc = qx.mouseCol(), mr = qx.mouseRow();
-      return mc >= PX && mc <= PX + 13 && mr === 12;
+      return mc >= PX && mc <= PX + 11 && mr === 12;
     }
 
     // ===== DRAWING =====
@@ -344,10 +515,12 @@
       qx.cls();
       drawMap();
       drawUnits();
+      drawFloatingNums();
       drawPanel();
       drawLog();
       drawCursor();
-      if (bannerTimer > 0) drawBanner();
+      if (bannerTimer > 0 && state !== 'win' && state !== 'lose') drawBanner();
+      if (state === 'win' || state === 'lose') drawEndScreen();
     }
 
     function drawMap() {
@@ -360,6 +533,10 @@
           // Highlight movement range
           if (state === 'move' && moveRange && moveRange.has(key)) {
             bg = 1; // dark blue
+          }
+          // Attack reach preview (enemies reachable from move range)
+          if (state === 'move' && atkReach && atkReach.has(key)) {
+            bg = 2; // dark red
           }
           // Highlight attack targets
           if (state === 'combat' && atkTargets.find(u => u.x === x && u.y === y)) {
@@ -379,26 +556,77 @@
 
     function drawUnits() {
       for (const u of alive()) {
+        // Skip animating unit (drawn separately)
+        if (u === animUnit) continue;
+
         const teamColor = u.team === 0 ? 9 : 10;  // blue / red
         const dimColor = u.team === 0 ? 1 : 2;    // dark blue / dark red
-        const fg = u.acted ? dimColor : teamColor;
-        // Highlight selected unit
+        let fg = u.acted ? dimColor : teamColor;
         const isSelected = (u === selUnit);
-        qx.color(isSelected ? 14 : fg); // yellow if selected
-        qx.locate(MX + u.x, MY + u.y);
-        qx.printChar(u.ch);
 
-        // HP bar (pixel level)
-        const px = (MX + u.x) * 8;
-        const py = (MY + u.y) * 8 + 6;
-        const barW = Math.max(1, Math.ceil(u.hp / u.mhp * 7));
-        // Bar background (dark)
-        qx.color(8);
-        qx.fillRect(px, py, 8, 2);
-        // Bar fill
-        const hpRatio = u.hp / u.mhp;
-        qx.color(hpRatio > 0.5 ? 12 : hpRatio > 0.25 ? 14 : 10);
-        qx.fillRect(px, py, barW, 2);
+        // Combat flash
+        if (u.flashTimer && u.flashTimer > 0) {
+          fg = (u.flashTimer % 2 === 0) ? 15 : fg;
+        }
+
+        // Determine if sprite needs flipping (sprFlip inverts for naturally left-facing sprites)
+        const flip = (u.facing < 0) !== !!u.sprFlip;
+
+        // Pulsing selected unit
+        if (isSelected && !animUnit) {
+          const bright = 0.6 + 0.4 * Math.sin(frameCount * 0.15);
+          qx.color(14, 0);
+          if (flip) {
+            const oldBright = qx.getBrightness();
+            qx.brightness(bright);
+            qx.locate(MX + u.x, MY + u.y);
+            qx.printCharHFlip(u.ch);
+            qx.brightness(oldBright);
+          } else {
+            qx.drawCharWithBrightness(u.ch, MX + u.x, MY + u.y, bright);
+          }
+        } else {
+          qx.color(isSelected ? 14 : fg, 0);
+          qx.locate(MX + u.x, MY + u.y);
+          if (flip) qx.printCharHFlip(u.ch);
+          else qx.printChar(u.ch);
+        }
+
+        drawHPBar(u, (MX + u.x) * 8, (MY + u.y) * 8);
+      }
+
+      // Draw animated unit stepping along grid path
+      if (animUnit && animStep < animPath.length - 1) {
+        const u = animUnit;
+        const from = animPath[animStep];
+        const to = animPath[animStep + 1];
+        const t = animStepProgress / 4;
+        const px = Math.round((MX + from.x + (to.x - from.x) * t) * 8);
+        const py = Math.round((MY + from.y + (to.y - from.y) * t) * 8);
+        const teamColor = u.team === 0 ? 9 : 10;
+        const isSelected = (u === selUnit);
+        qx.color(isSelected ? 14 : teamColor, 0);
+        qx.spr(u.ch, px, py);
+        drawHPBar(u, px, py);
+      }
+    }
+
+    function drawHPBar(u, px, py) {
+      const barY = py + 6;
+      const barW = Math.max(1, Math.ceil(u.hp / u.mhp * 7));
+      qx.color(8);
+      qx.fillRect(px, barY, 8, 2);
+      const hpRatio = u.hp / u.mhp;
+      qx.color(hpRatio > 0.5 ? 12 : hpRatio > 0.25 ? 14 : 10);
+      qx.fillRect(px, barY, barW, 2);
+    }
+
+    function drawFloatingNums() {
+      for (const f of floatingNums) {
+        const yOff = (20 - f.life) * 0.8;
+        const bright = Math.max(0.2, f.life / 20);
+        qx.color(f.color);
+        qx.drawTextWithBrightness(f.x, f.y - yOff, f.text, bright);
       }
     }
 
@@ -413,39 +641,74 @@
       qx.locate(PX, 2);
       qx.print("Turn " + turn);
 
-      // Selected unit info
+      // Units ready counter
+      if (state === 'select' || state === 'move' || state === 'combat') {
+        const ready = teamAlive(0).filter(u => !u.acted).length;
+        const total = teamAlive(0).length;
+        qx.color(ready > 0 ? 12 : 8);
+        qx.locate(PX, 3);
+        qx.print(ready + "/" + total + " ready");
+      }
+
+      // Selected unit info or hover info
       const showUnit = selUnit || (mp ? unitAt(mp.x, mp.y) : null);
       if (showUnit) {
         const tc = showUnit.team === 0 ? 9 : 10;
         qx.color(tc);
         qx.locate(PX, 4);
-        qx.print(showUnit.name + "        ");
+        const nameStr = showUnit.name.substring(0, 15);
+        qx.print(nameStr);
+        const pad = 15 - nameStr.length;
+        if (pad > 0) qx.print(" ".repeat(pad));
+
         // HP bar in panel
         const hpRatio = showUnit.hp / showUnit.mhp;
         qx.color(hpRatio > 0.5 ? 12 : hpRatio > 0.25 ? 14 : 10);
         qx.locate(PX, 5);
         qx.print("HP ");
-        const barLen = 8;
+        const barLen = 6;
         const filled = Math.ceil(hpRatio * barLen);
         for (let i = 0; i < barLen; i++) {
           qx.printChar(i < filled ? 0xDB : 0xB0); // filled block / light shade
         }
         qx.color(7);
         qx.print(" " + showUnit.hp + "/" + showUnit.mhp);
+
         qx.locate(PX, 6);
         qx.print("ATK " + showUnit.atk + "  DEF " + showUnit.def);
         qx.locate(PX, 7);
         qx.print("MOV " + showUnit.mov);
+        // Acted badge
+        if (showUnit.acted) {
+          qx.color(8);
+          qx.print(" [DONE]");
+        }
 
-        // Show damage preview in combat state
-        if (state === 'combat' && mp) {
+        // Damage preview in combat state
+        if (state === 'combat' && mp && selUnit) {
           const target = atkTargets.find(u => u.x === mp.x && u.y === mp.y);
           if (target) {
-            const tDef = terrAt(target.x, target.y).def;
-            const dmg = Math.max(1, selUnit.atk - (target.def + tDef));
+            const dmg = calcDmg(selUnit, target);
             qx.color(10);
             qx.locate(PX, 8);
             qx.print("-> " + dmg + " dmg");
+            // Counter-damage preview
+            if (target.hp - dmg > 0) {
+              const cdmg = calcDmg(target, selUnit);
+              if (selUnit.hp - cdmg <= 0) {
+                qx.color(10);
+                qx.locate(PX, 9);
+                qx.print("<- KO!");
+              } else {
+                qx.color(14);
+                qx.locate(PX, 9);
+                qx.print("<- " + cdmg + " back");
+              }
+            } else {
+              qx.color(12);
+              qx.locate(PX, 9);
+              qx.print("   KO!");
+            }
           }
         }
       }
@@ -455,13 +718,14 @@
         const t = terrAt(mp.x, mp.y);
         qx.color(8);
         qx.locate(PX, 10);
-        qx.print(t.name + "       ");
-        if (t.def > 0) {
-          qx.locate(PX, 11);
-          qx.print("DEF +" + t.def + "  ");
+        qx.print(t.name + "          ".substring(0, 15 - t.name.length));
+        qx.locate(PX, 11);
+        if (t.cost < 0) {
+          qx.print("Impassable     ");
+        } else if (t.def > 0) {
+          qx.print("DEF+" + t.def + " Cost:" + t.cost + "  ");
         } else {
-          qx.locate(PX, 11);
-          qx.print("       ");
+          qx.print("Cost:" + t.cost + "          ");
         }
       }
 
@@ -477,12 +741,10 @@
       // State instructions
       qx.color(8);
       qx.locate(0, 14);
-      if (state === 'select') qx.print(" Click a blue unit to select ");
-      else if (state === 'move') qx.print(" Click blue tile to move     ");
-      else if (state === 'combat') qx.print(" Click red enemy to attack   ");
+      if (state === 'select') qx.print(" Select unit (E=End Turn)    ");
+      else if (state === 'move') qx.print(" Click tile (Esc=Cancel)     ");
+      else if (state === 'combat') qx.print(" Click enemy or R-click Wait ");
       else if (state === 'enemy') qx.print(" Enemy is thinking...        ");
-      else if (state === 'win') qx.print(" You won! Refresh to replay. ");
-      else if (state === 'lose') qx.print(" Defeated! Refresh to replay.");
     }
 
     function drawLog() {
@@ -514,10 +776,76 @@
       qx.print(bannerText);
     }
 
+    function drawEndScreen() {
+      const w = 24, h = 11;
+      const bx = Math.floor((32 - w) / 2);
+      const by = Math.floor((24 - h) / 2);
+
+      qx.color(15, 0);
+      qx.locate(bx, by);
+      qx.printBox(w, h);
+
+      // Title
+      if (state === 'win') {
+        qx.color(14);
+        qx.locate(bx + 8, by + 2);
+        qx.print("VICTORY!");
+      } else {
+        qx.color(10);
+        qx.locate(bx + 7, by + 2);
+        qx.print("DEFEAT...");
+      }
+
+      // Stats
+      qx.color(7);
+      qx.locate(bx + 3, by + 4);
+      qx.print("Turns: " + turn);
+      qx.locate(bx + 3, by + 5);
+      const surv = teamAlive(0).length;
+      qx.print("Survivors: " + surv + "/3");
+      qx.locate(bx + 3, by + 6);
+      const enemyLeft = teamAlive(1).length;
+      qx.print("Enemies:   " + enemyLeft + "/3");
+
+      // Restart prompt
+      qx.color(14);
+      qx.locate(bx + 7, by + 8);
+      qx.print("[R] Retry");
+    }
+
     // ===== MAIN LOOP =====
     function update() {
+      frameCount++;
+
+      // Update flash timers
+      for (const u of units) {
+        if (u.flashTimer && u.flashTimer > 0) u.flashTimer--;
+      }
+
+      // Update floating numbers
+      for (let i = floatingNums.length - 1; i >= 0; i--) {
+        floatingNums[i].life--;
+        if (floatingNums[i].life <= 0) floatingNums.splice(i, 1);
+      }
+
+      // Animation update (4 frames per grid step)
+      if (animUnit) {
+        animStepProgress++;
+        if (animStepProgress >= 4) {
+          animStepProgress = 0;
+          animStep++;
+          if (animStep >= animPath.length - 1) {
+            const cb = animCallback;
+            animUnit = null;
+            animPath = [];
+            animCallback = null;
+            if (cb) cb();
+          }
+        }
+      }
+
       // Banner countdown
-      if (bannerTimer > 0) {
+      if (bannerTimer > 0 && !animUnit) {
         bannerTimer--;
         if (bannerTimer <= 0) {
           state = bannerNextState;
@@ -529,8 +857,8 @@
         doEnemyTurn();
       }
 
-      // Player input (only when not in banner/enemy/gameover)
-      if (state === 'select' || state === 'move' || state === 'combat') {
+      // Player input (including win/lose for restart)
+      if (state === 'select' || state === 'move' || state === 'combat' || state === 'win' || state === 'lose') {
         handleInput();
       }
 
@@ -538,9 +866,7 @@
     }
 
     async function main() {
-      addLog("Defeat all enemies!");
-      addLog("Right-click to deselect/end turn");
-      showBanner("PLAYER PHASE", 'select');
+      restartGame();
       qx.frame(update, 30);
     }
 
